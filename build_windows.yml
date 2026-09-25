@@ -1,0 +1,92 @@
+name: Build Windows Desktop App
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tạo tag release (Ví dụ: v1.0.0, để trống nếu chỉ test)'
+        required: false
+        default: ''
+
+jobs:
+  build-windows:
+    name: Package Windows Standalone App
+    runs-on: windows-latest
+
+    steps:
+      # Bước 1: Kéo toàn bộ mã nguồn từ repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Bước 2: Thiết lập môi trường Python 3.11
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # Bước 3: Cài đặt các thư viện cần thiết từ requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Bước 4: Cài đặt Chromium browser binary cho Playwright
+      - name: Install Playwright Chromium Browser
+        run: |
+          python -m playwright install chromium
+
+      # Bước 5: Biên dịch mã nguồn thành file EXE bằng PyInstaller
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller build.spec --noconfirm --clean
+
+      # Bước 6: Copy trình duyệt Playwright vào thư mục phân phối để chạy portable
+      - name: Bundle Playwright Browsers into Dist
+        shell: pwsh
+        run: |
+          $playwrightPath = [System.IO.Path]::Combine($env:LOCALAPPDATA, 'ms-playwright')
+          Write-Host "Playwright cache path: $playwrightPath"
+          
+          # Nếu thư mục dist/WinBatchDownloader tồn tại (chế độ onedir), copy browser vào
+          if (Test-Path "dist/WinBatchDownloader") {
+            New-Item -ItemType Directory -Force -Path "dist/WinBatchDownloader/playwright-browsers"
+            if (Test-Path $playwrightPath) {
+              Copy-Item -Path "$playwrightPath/*" -Destination "dist/WinBatchDownloader/playwright-browsers" -Recurse -Force
+            }
+          }
+
+      # Bước 7: Nén thư mục output thành file app-windows.zip
+      - name: Compress Build Artifact
+        shell: pwsh
+        run: |
+          if (Test-Path "dist/WinBatchDownloader") {
+            Compress-Archive -Path "dist/WinBatchDownloader/*" -DestinationPath "app-windows.zip" -Force
+          } elseif (Test-Path "dist/WinBatchDownloader.exe") {
+            Compress-Archive -Path "dist/WinBatchDownloader.exe" -DestinationPath "app-windows.zip" -Force
+          } else {
+            Compress-Archive -Path "dist/*" -DestinationPath "app-windows.zip" -Force
+          }
+          Write-Host "Đã nén thành công app-windows.zip"
+
+      # Bước 8: Upload Artifact lên GitHub Actions để người dùng tải về
+      - name: Upload Build Artifact (.zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinBatchDownloader-Windows-x64
+          path: app-windows.zip
+          retention-days: 30
+
+      # Bước 9 (Tùy chọn): Tự động tạo GitHub Release nếu có tag
+      - name: Create GitHub Release
+        if: github.event.inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          files: app-windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
